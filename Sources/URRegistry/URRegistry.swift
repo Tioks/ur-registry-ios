@@ -38,60 +38,131 @@ public class URRegistry {
             URRegistryFFI.utils_free(encoderPtr)
         }
     }
-
+    
     /// Get a parent CryptoHDKey instance provided by a UR, which can be used to derive public keys
     /// - Parameter ur: An UR string
     /// - Returns: An instance of CryptoHDKey
     public func getSourceHDKey(from ur: String) -> CryptoHDKey? {
-        guard ur.starts(with: "UR:CRYPTO-HDKEY") else { return nil }
-        
-        let decoderPointer = UnsafeMutableRawPointer(mutating: URRegistryFFI.ur_decoder_new().pointee.safeValue?._object)
+        guard ur.lowercased().starts(with: "UR:CRYPTO-HDKEY") else { return nil }
+
+        guard let decoderObj = URRegistryFFI.ur_decoder_new().pointee.safeValue?._object else { return nil }
+        let decoderPointer = UnsafeMutableRawPointer(mutating: decoderObj)
         let urPointer = UnsafeMutableRawPointer(mutating: (ur as NSString).utf8String)
         let targetPointer = UnsafeMutableRawPointer(mutating: ("crypto-hdkey" as NSString).utf8String)
-        
+
         URRegistryFFI.ur_decoder_receive(decoderPointer, urPointer)
-        
+
         let isCompleted = URRegistryFFI.ur_decoder_is_complete(decoderPointer).pointee.safeValue?._boolean ?? false
-        
-        guard isCompleted else { return nil }
-        
-        let hdKeyPtr = URRegistryFFI.ur_decoder_resolve(decoderPointer, targetPointer).pointee.safeValue?._object
-        let hdKeyPointer = UnsafeMutableRawPointer(mutating: hdKeyPtr)
-        
-        let keyPtr = URRegistryFFI.crypto_hd_key_get_key_data(hdKeyPointer).pointee.safeValue?._string
-        let chainCodePtr = URRegistryFFI.crypto_hd_key_get_chain_code(hdKeyPointer).pointee.safeValue?._string
-        let sourceFingerprintPtr = URRegistryFFI.crypto_hd_key_get_source_fingerprint(hdKeyPointer).pointee.safeValue?._string
-        let notePtr = URRegistryFFI.crypto_hd_key_get_note(hdKeyPointer).pointee.safeValue?._string
-        
-        guard
-            let keyPtr = keyPtr,
-            let chainCodePtr = chainCodePtr,
-            let sourceFingerprintPtr = sourceFingerprintPtr,
-            let sourceFingerprint = UInt32(String(cString: sourceFingerprintPtr), radix: 16),
-            let notePtr = notePtr
-        else {
-            URRegistryFFI.utils_free(hdKeyPtr)
-            URRegistryFFI.utils_free(keyPtr)
-            URRegistryFFI.utils_free(chainCodePtr)
-            URRegistryFFI.utils_free(sourceFingerprintPtr)
-            URRegistryFFI.utils_free(notePtr)
+        guard isCompleted else {
+            URRegistryFFI.utils_free(decoderPointer)
             return nil
         }
-        
-        let key = String(cString: keyPtr)
-        let chainCode = String(cString: chainCodePtr)
-        let noteString = String(cString: notePtr)
-        let note = CryptoHDKey.Note(rawValue: noteString) ?? .standard
-        let hdKey = CryptoHDKey(key: key, chainCode: chainCode, sourceFingerprint: sourceFingerprint, note: note)
 
-        URRegistryFFI.utils_free(hdKeyPtr)
-        URRegistryFFI.utils_free(keyPtr)
-        URRegistryFFI.utils_free(chainCodePtr)
-        URRegistryFFI.utils_free(sourceFingerprintPtr)
-        URRegistryFFI.utils_free(notePtr)
+        guard let hdKeyObj = URRegistryFFI.ur_decoder_resolve(decoderPointer, targetPointer).pointee.safeValue?._object else {
+            URRegistryFFI.utils_free(decoderPointer)
+            return nil
+        }
 
-        return hdKey
+        let hdKeyPointer = UnsafeMutableRawPointer(mutating: hdKeyObj)
+
+        defer {
+            // 清理内存
+            URRegistryFFI.utils_free(hdKeyObj)
+            URRegistryFFI.utils_free(decoderPointer)
+        }
+
+        func extractString(_ fn: (UnsafeMutableRawPointer?) -> URFFIResult) -> String? {
+            guard let ptr = fn(hdKeyPointer).pointee.safeValue?._string else { return nil }
+            defer { URRegistryFFI.utils_free(ptr) }
+            return String(cString: ptr)
+        }
+
+        let key = extractString(URRegistryFFI.crypto_hd_key_get_key_data)
+        let chainCode = extractString(URRegistryFFI.crypto_hd_key_get_chain_code)
+        let sourceFingerprintStr = extractString(URRegistryFFI.crypto_hd_key_get_source_fingerprint)
+        let noteStr = extractString(URRegistryFFI.crypto_hd_key_get_note)
+        let name = extractString(URRegistryFFI.crypto_hd_key_get_name)
+        let origin = extractString(URRegistryFFI.crypto_hd_key_get_origin)
+        let parentFingerprint = extractString(URRegistryFFI.crypto_hd_key_get_parent_fingerprint)
+
+        let isMaster = URRegistryFFI.crypto_hd_key_get_is_master(hdKeyPointer).pointee.safeValue?._boolean ?? false
+        let hasPrivateKey = URRegistryFFI.crypto_hd_key_get_has_private_key(hdKeyPointer).pointee.safeValue?._boolean ?? false
+
+        guard
+            let key = key,
+            let chainCode = chainCode,
+            let sourceFingerprintStr = sourceFingerprintStr,
+            let sourceFingerprint = UInt32(sourceFingerprintStr, radix: 16),
+            let noteStr = noteStr
+        else {
+            return nil
+        }
+
+        let note = CryptoHDKey.Note(rawValue: noteStr) ?? .standard
+
+        return CryptoHDKey(
+            key: key,
+            chainCode: chainCode,
+            sourceFingerprint: sourceFingerprint,
+            note: note,
+            name: name,
+            origin: origin,
+            parentFingerprint: parentFingerprint,
+            isMaster: isMaster,
+            hasPrivateKey: hasPrivateKey
+        )
     }
+
+//    public func getSourceHDKey(from ur: String) -> CryptoHDKey? {
+//        guard ur.starts(with: "UR:CRYPTO-HDKEY") else { return nil }
+//        
+//        let decoderPointer = UnsafeMutableRawPointer(mutating: URRegistryFFI.ur_decoder_new().pointee.safeValue?._object)
+//        let urPointer = UnsafeMutableRawPointer(mutating: (ur as NSString).utf8String)
+//        let targetPointer = UnsafeMutableRawPointer(mutating: ("crypto-hdkey" as NSString).utf8String)
+//        
+//        URRegistryFFI.ur_decoder_receive(decoderPointer, urPointer)
+//        
+//        let isCompleted = URRegistryFFI.ur_decoder_is_complete(decoderPointer).pointee.safeValue?._boolean ?? false
+//        
+//        guard isCompleted else { return nil }
+//        
+//        let hdKeyPtr = URRegistryFFI.ur_decoder_resolve(decoderPointer, targetPointer).pointee.safeValue?._object
+//        let hdKeyPointer = UnsafeMutableRawPointer(mutating: hdKeyPtr)
+//        
+//        let keyPtr = URRegistryFFI.crypto_hd_key_get_key_data(hdKeyPointer).pointee.safeValue?._string
+//        let chainCodePtr = URRegistryFFI.crypto_hd_key_get_chain_code(hdKeyPointer).pointee.safeValue?._string
+//        let sourceFingerprintPtr = URRegistryFFI.crypto_hd_key_get_source_fingerprint(hdKeyPointer).pointee.safeValue?._string
+//        let notePtr = URRegistryFFI.crypto_hd_key_get_note(hdKeyPointer).pointee.safeValue?._string
+//        
+//        guard
+//            let keyPtr = keyPtr,
+//            let chainCodePtr = chainCodePtr,
+//            let sourceFingerprintPtr = sourceFingerprintPtr,
+//            let sourceFingerprint = UInt32(String(cString: sourceFingerprintPtr), radix: 16),
+//            let notePtr = notePtr
+//        else {
+//            URRegistryFFI.utils_free(hdKeyPtr)
+//            URRegistryFFI.utils_free(keyPtr)
+//            URRegistryFFI.utils_free(chainCodePtr)
+//            URRegistryFFI.utils_free(sourceFingerprintPtr)
+//            URRegistryFFI.utils_free(notePtr)
+//            return nil
+//        }
+//        
+//        let key = String(cString: keyPtr)
+//        let chainCode = String(cString: chainCodePtr)
+//        let noteString = String(cString: notePtr)
+//        let note = CryptoHDKey.Note(rawValue: noteString) ?? .standard
+//        let hdKey = CryptoHDKey(key: key, chainCode: chainCode, sourceFingerprint: sourceFingerprint, note: note)
+//
+//        URRegistryFFI.utils_free(hdKeyPtr)
+//        URRegistryFFI.utils_free(keyPtr)
+//        URRegistryFFI.utils_free(chainCodePtr)
+//        URRegistryFFI.utils_free(sourceFingerprintPtr)
+//        URRegistryFFI.utils_free(notePtr)
+//
+//        return hdKey
+//    }
     
     /// Create a new decoder to clean the received UR on the current decoder. Please make sure to call this method after finishing a decoding process or before starting a new decoding task.
     public func resetDecoder() {
